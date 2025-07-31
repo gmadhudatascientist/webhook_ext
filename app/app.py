@@ -1,3 +1,6 @@
+import sys
+sys.setrecursionlimit(200)  # ✅ Set global recursion limit
+
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import Literal, TypedDict
@@ -22,7 +25,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyD_QkHiMP6SywCbji47EYeYEY1ysI
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 llm = init_chat_model("gemini-2.0-flash", model_provider="google_genai", config={"temperature": 0})
 
-# ✅ PDF loading and sentence-level chunking
+# ✅ Load and split PDF documents
 loader = PyPDFDirectoryLoader("./downloaded_pdfs")
 documents = loader.load()
 text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=200, chunk_overlap=50)
@@ -35,7 +38,7 @@ for doc in documents:
         split.metadata['source'] = filename
     all_splits.extend(splits)
 
-# ✅ Embedding + FAISS setup
+# ✅ FAISS vector store setup
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 index = faiss.IndexFlatL2(len(embeddings.embed_query("test")))
 vector_store = FAISS(embeddings, index, InMemoryDocstore(), {})
@@ -43,7 +46,7 @@ _ = vector_store.add_documents(all_splits)
 retriever = vector_store.as_retriever(search_kwargs={"k": 10})
 retriever_tool = create_retriever_tool(retriever, "retrieve_fairview_info", "Search Fairview policy and service information")
 
-# ✅ Custom state
+# ✅ LangGraph logic
 class CustomState(TypedDict):
     messages: list
     rewrite_count: int
@@ -54,7 +57,7 @@ class GradeDocuments(BaseModel):
 def generate_query_or_respond(state: CustomState):
     original_question = state["messages"][0].content.lower().strip()
 
-    # Rewrite known variants
+    # Rewriting known variants to help match
     reworded_question = original_question
     if "eligible for an evisit" in original_question:
         reworded_question = "who can use evisit"
@@ -71,12 +74,15 @@ def generate_query_or_respond(state: CustomState):
 
     reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
-    return {"messages": [
-        llm.bind_tools([retriever_tool]).invoke([
-            {"role": "system", "content": system_prompt},
-            reworded_message
-        ])
-    ], "rewrite_count": state.get("rewrite_count", 0)}
+    return {
+        "messages": [
+            llm.bind_tools([retriever_tool]).invoke([
+                {"role": "system", "content": system_prompt},
+                reworded_message
+            ])
+        ],
+        "rewrite_count": state.get("rewrite_count", 0)
+    }
 
 def grade_documents(state: CustomState) -> Literal["generate_answer", "rewrite_question"]:
     question = state["messages"][0].content
@@ -103,7 +109,7 @@ def generate_answer(state: CustomState):
     response = llm.invoke([{"role": "user", "content": prompt}])
     return {"messages": [response], "rewrite_count": 0}
 
-# ✅ LangGraph Build
+# ✅ Build LangGraph
 graph = StateGraph(CustomState)
 graph.add_node(generate_query_or_respond)
 graph.add_node("retrieve", ToolNode([retriever_tool]))
@@ -121,9 +127,9 @@ graph.add_conditional_edges("retrieve", grade_documents, {
 })
 graph.add_edge("rewrite_question", "generate_query_or_respond")
 graph.add_edge("generate_answer", END)
-workflow = graph.compile(config={"recursion_limit": 30})
+workflow = graph.compile()
 
-# ✅ FastAPI Webhook
+# ✅ FastAPI webhook endpoint for Dialogflow
 class DialogflowCXInput(BaseModel):
     query: str
 
