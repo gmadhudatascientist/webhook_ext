@@ -52,40 +52,14 @@ retriever_tool = create_retriever_tool(retriever, "retrieve_fairview_info", "Sea
 class GradeDocuments(BaseModel):
     binary_score: str
 
-# def generate_query_or_respond(state: MessagesState):
-#     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
-#     return {"messages": [
-#         llm.bind_tools([retriever_tool]).invoke([
-#             {"role": "system", "content": system_prompt},
-#             *state["messages"]
-#         ])
-#     ]}
 def generate_query_or_respond(state: MessagesState):
-    original_question = state["messages"][0].content.lower().strip()
-
-    # Rewrite known variants
-    reworded_question = original_question
-    if "eligible for an evisit" in original_question:
-        reworded_question = "who can use evisit"
-    elif "who is eligible for fmla" in original_question:
-        reworded_question = "what is the fmla policy"
-    elif "am i eligible if i work part-time" in original_question:
-        reworded_question = "can part-time employees get fmla"
-    elif "what happens when fmla ends" in original_question:
-        reworded_question = "what are employee rights after fmla ends"
-    elif "payment required" in original_question:
-        reworded_question = "is payment required upfront for evisit"
-    elif "need to download anything" in original_question:
-        reworded_question = "do i need to download any app for an evisit"
-
-    reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
     return {"messages": [
         llm.bind_tools([retriever_tool]).invoke([
             {"role": "system", "content": system_prompt},
-            reworded_message
+            *state["messages"]
         ])
-    ], "rewrite_count": state.get("rewrite_count", 0)}
+    ]}
 
 def grade_documents(state: MessagesState) -> Literal["generate_answer", "rewrite_question"]:
     question = state["messages"][0].content
