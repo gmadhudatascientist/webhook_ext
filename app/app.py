@@ -63,10 +63,10 @@ def generate_query_or_respond(state: MessagesState):
         reworded_question = "can part-time employees get fmla"
     elif "what happens when fmla ends" in original_question:
         reworded_question = "what are employee rights after fmla ends"
-    elif "Is Payment required upfront" in original_question:
+    elif "Payment required" in original_question:
         reworded_question = "Is Payment required upfront for evisit"
     
-    elif "do I need to download anything for an evisit" in original_question:
+    elif "need to download anything" in original_question:
             reworded_question = "do i need to download any app for an evisit"
 
     reworded_message = {"role": "user", "content": reworded_question}
