@@ -65,6 +65,9 @@ def generate_query_or_respond(state: MessagesState):
         reworded_question = "what are employee rights after fmla ends"
     elif "Is Payment required upfront" in original_question:
         reworded_question = "Is Payment required upfront for evisit"
+    
+    elif "do I need to download anything for an evisit" in original_question:
+            reworded_question = "do i need to download any app for an evisit"
 
     reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
@@ -91,7 +94,7 @@ def rewrite_question(state: MessagesState):
 def generate_answer(state: MessagesState):
     question = state["messages"][0].content
     context = state["messages"][-1].content
-    prompt = f"You are a Fairview HR or Support Agent.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
+    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
     response = llm.invoke([{"role": "user", "content": prompt}])
     return {"messages": [response]}
 
