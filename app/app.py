@@ -1,4 +1,4 @@
-# ✅ Refined LangGraph QA Workflow with Gemini Flash (Enhanced Accuracy + Rewriting Fix)
+# ✅ Refined LangGraph QA Workflow with Gemini Flash (HumanMessage Compatibility Fixed)
 
 import sys
 sys.setrecursionlimit(1500)
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Literal
 import os
 import faiss
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.in_memory import InMemoryDocstore
@@ -48,7 +48,7 @@ class GradeDocuments(BaseModel):
     binary_score: str
 
 def generate_query_or_respond(state: MessagesState):
-    original_question = state["messages"][0]["content"].lower().strip()
+    original_question = state["messages"][0].content.lower().strip()
 
     reworded_question = original_question
     if "eligible for an evisit" in original_question:
@@ -78,22 +78,22 @@ def generate_query_or_respond(state: MessagesState):
     }
 
 def grade_documents(state: MessagesState) -> Literal["generate_answer", "rewrite_question"]:
-    question = state["messages"][0]["content"]
-    context = state["messages"][-1]["content"]
+    question = state["messages"][0].content
+    context = state["messages"][-1].content
     prompt = f"Given this document excerpt:\n{context}\n\nCan it help answer the question: '{question}'? Reply with 'yes' or 'no'."
     result = llm.with_structured_output(GradeDocuments).invoke([{"role": "user", "content": prompt}])
     return "generate_answer" if result.binary_score.strip().lower() == "yes" else "rewrite_question"
 
 def rewrite_question(state: MessagesState):
-    original = state["messages"][0]["content"]
+    original = state["messages"][0].content
     prompt = f"Rephrase this question to better match official policy or FAQ language:\n'{original}'"
     revised = llm.invoke([{"role": "user", "content": prompt}])
-    return {"messages": [{"role": "user", "content": revised.content}]}
+    return {"messages": [HumanMessage(content=revised.content)]}
 
 def generate_answer(state: MessagesState):
-    question = state["messages"][0]["content"]
-    context = state["messages"][-1]["content"]
-    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
+    question = state["messages"][0].content
+    context = state["messages"][-1].content
+    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided'."
     response = llm.invoke([{"role": "user", "content": prompt}])
     return {"messages": [response]}
 
@@ -123,7 +123,7 @@ class DialogflowCXInput(BaseModel):
 async def dialogflow_webhook(request: Request):
     body = await request.json()
     user_query = body.get("sessionInfo", {}).get("parameters", {}).get("user_input", "") or body.get("text", "")
-    messages = [{"role": "user", "content": user_query}]
+    messages = [HumanMessage(content=user_query)]
     result = ""
 
     for chunk in workflow.stream({"messages": messages, "rewrite_count": 0}):
