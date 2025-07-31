@@ -1,8 +1,6 @@
-# ✅ Refined LangGraph QA Workflow with Gemini Flash (Enhanced Accuracy for Eligibility Queries)
-
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from typing import Literal
+from typing import Literal, TypedDict
 import os
 import faiss
 from langchain_core.messages import AIMessage
@@ -13,7 +11,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.tools.retriever import create_retriever_tool
 from langchain.chat_models import init_chat_model
-from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
 # ✅ App setup
@@ -27,9 +25,8 @@ llm = init_chat_model("gemini-2.0-flash", model_provider="google_genai", config=
 # ✅ PDF loading and sentence-level chunking
 loader = PyPDFDirectoryLoader("./downloaded_pdfs")
 documents = loader.load()
-
-# Sentence-level splitting to improve fine-grained retrieval
 text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=200, chunk_overlap=50)
+
 all_splits = []
 for doc in documents:
     filename = doc.metadata.get("source", "unknown")
@@ -46,14 +43,18 @@ _ = vector_store.add_documents(all_splits)
 retriever = vector_store.as_retriever(search_kwargs={"k": 10})
 retriever_tool = create_retriever_tool(retriever, "retrieve_fairview_info", "Search Fairview policy and service information")
 
-# ✅ LangGraph logic
+# ✅ Custom state
+class CustomState(TypedDict):
+    messages: list
+    rewrite_count: int
+
 class GradeDocuments(BaseModel):
     binary_score: str
 
-def generate_query_or_respond(state: MessagesState):
+def generate_query_or_respond(state: CustomState):
     original_question = state["messages"][0].content.lower().strip()
 
-    # Rewriting known variants to boost match rate
+    # Rewrite known variants
     reworded_question = original_question
     if "eligible for an evisit" in original_question:
         reworded_question = "who can use evisit"
@@ -63,11 +64,10 @@ def generate_query_or_respond(state: MessagesState):
         reworded_question = "can part-time employees get fmla"
     elif "what happens when fmla ends" in original_question:
         reworded_question = "what are employee rights after fmla ends"
-    elif "Payment required" in original_question:
-        reworded_question = "Is Payment required upfront for evisit"
-    
+    elif "payment required" in original_question:
+        reworded_question = "is payment required upfront for evisit"
     elif "need to download anything" in original_question:
-            reworded_question = "do i need to download any app for an evisit"
+        reworded_question = "do i need to download any app for an evisit"
 
     reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
@@ -76,30 +76,35 @@ def generate_query_or_respond(state: MessagesState):
             {"role": "system", "content": system_prompt},
             reworded_message
         ])
-    ]}
+    ], "rewrite_count": state.get("rewrite_count", 0)}
 
-def grade_documents(state: MessagesState) -> Literal["generate_answer", "rewrite_question"]:
+def grade_documents(state: CustomState) -> Literal["generate_answer", "rewrite_question"]:
     question = state["messages"][0].content
     context = state["messages"][-1].content
     prompt = f"Given this document excerpt:\n{context}\n\nCan it help answer the question: '{question}'? Reply with 'yes' or 'no'."
     result = llm.with_structured_output(GradeDocuments).invoke([{"role": "user", "content": prompt}])
+    if state.get("rewrite_count", 0) >= 3:
+        return "generate_answer"
     return "generate_answer" if result.binary_score.strip().lower() == "yes" else "rewrite_question"
 
-def rewrite_question(state: MessagesState):
+def rewrite_question(state: CustomState):
     original = state["messages"][0].content
     prompt = f"Rephrase this question to better match official policy or FAQ language:\n'{original}'"
     revised = llm.invoke([{"role": "user", "content": prompt}])
-    return {"messages": [{"role": "user", "content": revised.content}]}
+    return {
+        "messages": [{"role": "user", "content": revised.content}],
+        "rewrite_count": state.get("rewrite_count", 0) + 1
+    }
 
-def generate_answer(state: MessagesState):
+def generate_answer(state: CustomState):
     question = state["messages"][0].content
     context = state["messages"][-1].content
-    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
+    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' or 'based on the information provided'."
     response = llm.invoke([{"role": "user", "content": prompt}])
-    return {"messages": [response]}
+    return {"messages": [response], "rewrite_count": 0}
 
-# ✅ LangGraph build
-graph = StateGraph(MessagesState)
+# ✅ LangGraph Build
+graph = StateGraph(CustomState)
 graph.add_node(generate_query_or_respond)
 graph.add_node("retrieve", ToolNode([retriever_tool]))
 graph.add_node(rewrite_question)
@@ -116,9 +121,9 @@ graph.add_conditional_edges("retrieve", grade_documents, {
 })
 graph.add_edge("rewrite_question", "generate_query_or_respond")
 graph.add_edge("generate_answer", END)
-workflow = graph.compile()
+workflow = graph.compile(config={"recursion_limit": 30})
 
-# ✅ FastAPI Webhook for Dialogflow
+# ✅ FastAPI Webhook
 class DialogflowCXInput(BaseModel):
     query: str
 
@@ -129,7 +134,7 @@ async def dialogflow_webhook(request: Request):
     messages = [{"role": "user", "content": user_query}]
     result = ""
 
-    for chunk in workflow.stream({"messages": messages}):
+    for chunk in workflow.stream({"messages": messages, "rewrite_count": 0}):
         for _, update in chunk.items():
             last_msg = update["messages"][-1]
             if isinstance(last_msg, AIMessage):
