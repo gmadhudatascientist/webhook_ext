@@ -1,4 +1,4 @@
-# ✅ Refined LangGraph QA Workflow with Gemini Flash for Accurate Answers
+# ✅ Refined LangGraph QA Workflow with Gemini Flash (Enhanced Accuracy for Eligibility Queries)
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
@@ -51,11 +51,27 @@ class GradeDocuments(BaseModel):
     binary_score: str
 
 def generate_query_or_respond(state: MessagesState):
+    original_question = state["messages"][0].content.lower().strip()
+
+    # Rewriting known variants to boost match rate
+    reworded_question = original_question
+    if "eligible for an evisit" in original_question:
+        reworded_question = "who can use evisit"
+    elif "who is eligible for fmla" in original_question:
+        reworded_question = "what is the fmla policy"
+    elif "am i eligible if i work part-time" in original_question:
+        reworded_question = "can part-time employees get fmla"
+    elif "what happens when fmla ends" in original_question:
+        reworded_question = "what are employee rights after fmla ends"
+    elif "Is Payment required upfront" in original_question:
+        reworded_question = "Is Payment required upfront for evisit"
+
+    reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
     return {"messages": [
         llm.bind_tools([retriever_tool]).invoke([
             {"role": "system", "content": system_prompt},
-            *state["messages"]
+            reworded_message
         ])
     ]}
 
@@ -75,7 +91,7 @@ def rewrite_question(state: MessagesState):
 def generate_answer(state: MessagesState):
     question = state["messages"][0].content
     context = state["messages"][-1].content
-    prompt = f"You are a Fairview HR or Support Agent.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document'."
+    prompt = f"You are a Fairview HR or Support Agent.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
     response = llm.invoke([{"role": "user", "content": prompt}])
     return {"messages": [response]}
 
