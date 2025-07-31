@@ -1,5 +1,5 @@
 import sys
-sys.setrecursionlimit(200)  # ✅ Set global recursion limit
+sys.setrecursionlimit(1500) # ✅ Set global recursion limit
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
