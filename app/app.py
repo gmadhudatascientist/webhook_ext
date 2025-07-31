@@ -1,9 +1,11 @@
+# ✅ Refined LangGraph QA Workflow with Gemini Flash (Enhanced Accuracy + Rewriting Fix)
+
 import sys
-sys.setrecursionlimit(1500) # ✅ Set global recursion limit
+sys.setrecursionlimit(1500)
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from typing import Literal, TypedDict
+from typing import Literal
 import os
 import faiss
 from langchain_core.messages import AIMessage
@@ -14,22 +16,19 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.tools.retriever import create_retriever_tool
 from langchain.chat_models import init_chat_model
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
-# ✅ App setup
 app = FastAPI()
 
-# ✅ Google API Key and Gemini LLM
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyD_QkHiMP6SywCbji47EYeYEY1ysIDC00Y")
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 llm = init_chat_model("gemini-2.0-flash", model_provider="google_genai", config={"temperature": 0})
 
-# ✅ Load and split PDF documents
 loader = PyPDFDirectoryLoader("./downloaded_pdfs")
 documents = loader.load()
-text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=200, chunk_overlap=50)
 
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=200, chunk_overlap=50)
 all_splits = []
 for doc in documents:
     filename = doc.metadata.get("source", "unknown")
@@ -38,7 +37,6 @@ for doc in documents:
         split.metadata['source'] = filename
     all_splits.extend(splits)
 
-# ✅ FAISS vector store setup
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 index = faiss.IndexFlatL2(len(embeddings.embed_query("test")))
 vector_store = FAISS(embeddings, index, InMemoryDocstore(), {})
@@ -46,18 +44,12 @@ _ = vector_store.add_documents(all_splits)
 retriever = vector_store.as_retriever(search_kwargs={"k": 10})
 retriever_tool = create_retriever_tool(retriever, "retrieve_fairview_info", "Search Fairview policy and service information")
 
-# ✅ LangGraph logic
-class CustomState(TypedDict):
-    messages: list
-    rewrite_count: int
-
 class GradeDocuments(BaseModel):
     binary_score: str
 
-def generate_query_or_respond(state: CustomState):
-    original_question = state["messages"][0].content.lower().strip()
+def generate_query_or_respond(state: MessagesState):
+    original_question = state["messages"][0]["content"].lower().strip()
 
-    # Rewriting known variants to help match
     reworded_question = original_question
     if "eligible for an evisit" in original_question:
         reworded_question = "who can use evisit"
@@ -74,6 +66,7 @@ def generate_query_or_respond(state: CustomState):
 
     reworded_message = {"role": "user", "content": reworded_question}
     system_prompt = "Always use the retriever tool to find relevant answers from internal documentation."
+
     return {
         "messages": [
             llm.bind_tools([retriever_tool]).invoke([
@@ -84,33 +77,27 @@ def generate_query_or_respond(state: CustomState):
         "rewrite_count": state.get("rewrite_count", 0)
     }
 
-def grade_documents(state: CustomState) -> Literal["generate_answer", "rewrite_question"]:
-    question = state["messages"][0].content
-    context = state["messages"][-1].content
+def grade_documents(state: MessagesState) -> Literal["generate_answer", "rewrite_question"]:
+    question = state["messages"][0]["content"]
+    context = state["messages"][-1]["content"]
     prompt = f"Given this document excerpt:\n{context}\n\nCan it help answer the question: '{question}'? Reply with 'yes' or 'no'."
     result = llm.with_structured_output(GradeDocuments).invoke([{"role": "user", "content": prompt}])
-    if state.get("rewrite_count", 0) >= 3:
-        return "generate_answer"
     return "generate_answer" if result.binary_score.strip().lower() == "yes" else "rewrite_question"
 
-def rewrite_question(state: CustomState):
-    original = state["messages"][0].content
+def rewrite_question(state: MessagesState):
+    original = state["messages"][0]["content"]
     prompt = f"Rephrase this question to better match official policy or FAQ language:\n'{original}'"
     revised = llm.invoke([{"role": "user", "content": prompt}])
-    return {
-        "messages": [{"role": "user", "content": revised.content}],
-        "rewrite_count": state.get("rewrite_count", 0) + 1
-    }
+    return {"messages": [{"role": "user", "content": revised.content}]}
 
-def generate_answer(state: CustomState):
-    question = state["messages"][0].content
-    context = state["messages"][-1].content
-    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' or 'based on the information provided'."
+def generate_answer(state: MessagesState):
+    question = state["messages"][0]["content"]
+    context = state["messages"][-1]["content"]
+    prompt = f"You are a Fairview chatbot.\nQuestion: {question}\nContext: {context}\n\nGive a direct, clear 1-2 sentence answer. Do not say 'according to the document' and 'based on the information provided' '."
     response = llm.invoke([{"role": "user", "content": prompt}])
-    return {"messages": [response], "rewrite_count": 0}
+    return {"messages": [response]}
 
-# ✅ Build LangGraph
-graph = StateGraph(CustomState)
+graph = StateGraph(MessagesState)
 graph.add_node(generate_query_or_respond)
 graph.add_node("retrieve", ToolNode([retriever_tool]))
 graph.add_node(rewrite_question)
@@ -129,7 +116,6 @@ graph.add_edge("rewrite_question", "generate_query_or_respond")
 graph.add_edge("generate_answer", END)
 workflow = graph.compile()
 
-# ✅ FastAPI webhook endpoint for Dialogflow
 class DialogflowCXInput(BaseModel):
     query: str
 
